@@ -169,22 +169,23 @@ def complete_quest_via_heartbeat(quest: dict, token: str):
         print("\n  Quest already complete! Go claim your reward.")
         return
 
-    # Enroll if needed
-    if not user_status.get("enrolledAt") and not user_status.get("enrolled_at"):
-        enroll_quest(quest_id, token)
+    # Always enroll (idempotent — 400 just means already enrolled)
+    enroll_quest(quest_id, token)
 
-    # Generate a fake stream key
-    fake_channel_id = str(int(quest_id) & 0xFFFFFFFFFFFF)
-    stream_key = f"call:{fake_channel_id}:1"
+    # Generate a fake stream key using the quest's application id
+    app_id = str(app.get("id", quest_id))
+    stream_key = f"call:{app_id}:1"
 
     print(f"\n  Sending heartbeats every 20s...")
     print(f"  Stream key: {stream_key}")
     print("  Press Ctrl+C to stop.\n")
 
+    enrolled_retry = False
     try:
         while True:
             try:
                 resp = send_heartbeat(quest_id, token, stream_key, terminal=False)
+                enrolled_retry = False
             except HTTPError as e:
                 err_body = e.read().decode() if hasattr(e, 'read') else ''
                 print(f"\n  Heartbeat error {e.code}: {err_body[:200]}")
@@ -192,7 +193,13 @@ def complete_quest_via_heartbeat(quest: dict, token: str):
                     print("  401 = needs Electron user-agent. This should be handled.")
                     break
                 if e.code == 404:
-                    print("  Quest may not be enrolled or has expired.")
+                    if not enrolled_retry:
+                        print("  Retrying after re-enroll...")
+                        enroll_quest(quest_id, token)
+                        enrolled_retry = True
+                        time.sleep(5)
+                        continue
+                    print("  Quest not found. It may have expired.")
                     break
                 # Retry on other errors
                 time.sleep(20)
@@ -250,61 +257,69 @@ def main():
         TOKEN_FILE.write_text(token)
         print("Token saved for next time.")
 
-    print("\nFetching quests...")
-    try:
-        quests = get_quests(token)
-    except HTTPError as e:
-        print(f"API error {e.code}: {e.read().decode()[:200]}")
-        sys.exit(1)
+    while True:
+        print("\nFetching quests...")
+        try:
+            quests = get_quests(token)
+        except HTTPError as e:
+            print(f"API error {e.code}: {e.read().decode()[:200]}")
+            sys.exit(1)
 
-    if not quests:
-        print("No active quests found.")
-        sys.exit(0)
+        if not quests:
+            print("No active quests found.")
+            break
 
-    # Filter to quests with play tasks that aren't completed
-    game_quests = []
-    for q in quests:
-        tasks = find_play_tasks(q)
-        if not tasks:
-            continue
-        user_status = q.get("userStatus", q.get("user_status", {})) or {}
-        if user_status.get("completedAt") or user_status.get("completed_at"):
-            continue
-        game_quests.append(q)
-
-    if not game_quests:
-        # Show all quests for debugging
-        print(f"Found {len(quests)} quest(s), but none are incomplete game-play quests.")
+        # Filter to quests with play tasks that aren't completed
+        game_quests = []
         for q in quests:
-            config = q.get("config", {})
-            messages = config.get("messages", {})
-            name = messages.get("quest_name", q.get("id", "?"))
-            tc = config.get("task_config_v2") or config.get("task_config") or {}
-            tasks = tc.get("tasks", {})
-            types = list(tasks.keys()) if isinstance(tasks, dict) else "?"
-            status = q.get("userStatus", q.get("user_status", {})) or {}
-            completed = status.get("completedAt") or status.get("completed_at")
-            print(f"  - {name} | tasks: {types} | completed: {bool(completed)}")
-        sys.exit(0)
+            tasks = find_play_tasks(q)
+            if not tasks:
+                continue
+            user_status = q.get("userStatus", q.get("user_status", {})) or {}
+            if user_status.get("completedAt") or user_status.get("completed_at"):
+                continue
+            game_quests.append(q)
 
-    # Select quest
-    if len(game_quests) == 1:
-        target = game_quests[0]
-    else:
+        if not game_quests:
+            # Show all quests for debugging
+            print(f"Found {len(quests)} quest(s), but none are incomplete game-play quests.")
+            for q in quests:
+                config = q.get("config", {})
+                messages = config.get("messages", {})
+                name = messages.get("quest_name", q.get("id", "?"))
+                tc = config.get("task_config_v2") or config.get("task_config") or {}
+                tasks = tc.get("tasks", {})
+                types = list(tasks.keys()) if isinstance(tasks, dict) else "?"
+                status = q.get("userStatus", q.get("user_status", {})) or {}
+                completed = status.get("completedAt") or status.get("completed_at")
+                print(f"  - {name} | tasks: {types} | completed: {bool(completed)}")
+            break
+
+        # Select quest
         print(f"\nFound {len(game_quests)} game quest(s):\n")
         for i, q in enumerate(game_quests):
             messages = q.get("config", {}).get("messages", {})
             name = messages.get("quest_name", q.get("id", "?"))
             print(f"  [{i+1}] {name}")
+        print(f"  [q] Quit")
 
-        choice = input("\nSelect quest number: ").strip()
+        if len(game_quests) == 1:
+            choice = input("\nStart quest? [1/q]: ").strip().lower()
+        else:
+            choice = input("\nSelect quest number: ").strip().lower()
+
+        if choice == "q":
+            break
+
         try:
             target = game_quests[int(choice) - 1]
         except (ValueError, IndexError):
             print("Invalid selection.")
-            sys.exit(1)
+            continue
 
-    complete_quest_via_heartbeat(target, token)
+        complete_quest_via_heartbeat(target, token)
+
+    print("\nDone.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Discord Quest Token Grabber",
+  "description": "Captures your Discord token for use with Quest Completer",
+  "version": "1.0",
+  "permissions": ["webRequest", "storage", "downloads"],
+  "host_permissions": ["https://discord.com/*", "https://*.discord.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png"
+  }
+}
